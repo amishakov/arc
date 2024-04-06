@@ -43,11 +43,13 @@ if [ "${OFFLINE}" = "false" ]; then
   fi
 fi
 
+# Get Loader Config
+LAYOUT="$(readConfigKey "layout" "${USER_CONFIG_FILE}")"
+KEYMAP="$(readConfigKey "keymap" "${USER_CONFIG_FILE}")"
+
 # Get DSM Data from Config
 MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
 PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
-LAYOUT="$(readConfigKey "layout" "${USER_CONFIG_FILE}")"
-KEYMAP="$(readConfigKey "keymap" "${USER_CONFIG_FILE}")"
 LKM="$(readConfigKey "lkm" "${USER_CONFIG_FILE}")"
 if [ -n "${MODEL}" ]; then
   PLATFORM="$(readModelKey "${MODEL}" "platform")"
@@ -56,8 +58,6 @@ fi
 
 # Get Arc Data from Config
 DIRECTBOOT="$(readConfigKey "arc.directboot" "${USER_CONFIG_FILE}")"
-CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
-BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
 ARCPATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
 BOOTIPWAIT="$(readConfigKey "arc.bootipwait" "${USER_CONFIG_FILE}")"
 KERNELLOAD="$(readConfigKey "arc.kernelload" "${USER_CONFIG_FILE}")"
@@ -73,6 +73,10 @@ ARCIPV6="$(readConfigKey "arc.ipv6" "${USER_CONFIG_FILE}")"
 EMMCBOOT="$(readConfigKey "arc.emmcboot" "${USER_CONFIG_FILE}")"
 OFFLINE="$(readConfigKey "arc.offline" "${USER_CONFIG_FILE}")"
 EXTERNALCONTROLLER="$(readConfigKey "device.externalcontroller" "${USER_CONFIG_FILE}")"
+
+# Get Config/Build Status
+CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
+BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
 
 if [ "${OFFLINE}" = "false" ]; then
   # Update Check
@@ -135,7 +139,7 @@ function arcModel() {
         [[ "${PLATFORM}" = "apollolake" || "${PLATFORM}" = "geminilake" || "${PLATFORM}" = "epyc7002" ]] && IGPUS="x" || IGPUS=""
         [[ ! "${DT}" = "true" || "${PLATFORM}" = "epyc7002" ]] && HBAS="x" || HBAS=""
         [[ "${M}" = "DS220+" ||  "${M}" = "DS224+" || "${M}" = "DS918+" || "${M}" = "DS1019+" || "${M}" = "DS1621xs+" || "${M}" = "RS1619xs+" ]] && M_2_CACHE="" || M_2_CACHE="x"
-        [ "${DT}" = "true" ] && M_2_STORAGE="x" || M_2_STORAGE=""
+        [[ "${DT}" = "true" && "${M}" != "DS220+" && "${M}" != "DS224+" ]] && M_2_STORAGE="x" || M_2_STORAGE=""
         # Check id model is compatible with CPU
         COMPATIBLE=1
         if [ ${RESTRICT} -eq 1 ]; then
@@ -190,7 +194,6 @@ function arcModel() {
   # read model config for dt and aes
   if [ "${MODEL}" != "${resp}" ]; then
     MODEL="${resp}"
-    DT="$(readModelKey "${MODEL}" "dt")"
     PRODUCTVER=""
     writeConfigKey "model" "${MODEL}" "${USER_CONFIG_FILE}"
     writeConfigKey "productver" "" "${USER_CONFIG_FILE}"
@@ -204,6 +207,7 @@ function arcModel() {
     writeConfigKey "cmdline" "{}" "${USER_CONFIG_FILE}"
     writeConfigKey "synoinfo" "{}" "${USER_CONFIG_FILE}"
     writeConfigKey "modules" "{}" "${USER_CONFIG_FILE}"
+    writeConfigKey "addons" "{}" "${USER_CONFIG_FILE}"
     CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
     BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
     if [[ -f "${ORI_ZIMAGE_FILE}" || -f "${ORI_RDGZ_FILE}" || -f "${MOD_ZIMAGE_FILE}" || -f "${MOD_RDGZ_FILE}" ]]; then
@@ -366,6 +370,14 @@ function arcSettings() {
       --infobox "Storage Map..." 3 30
     getmapSelection
   fi
+  # Check for ACPI Support
+  if grep -q "^flags.*acpi.*" /proc/cpuinfo; then
+    writeConfigKey "addons.acpid" "" "${USER_CONFIG_FILE}"
+  else
+    deleteConfigKey "addons.acpid" "${USER_CONFIG_FILE}"
+  fi
+  # Add Arc Addons
+  writeConfigKey "addons.cpuinfo" "" "${USER_CONFIG_FILE}"
   # Select Addons
   addonSelection
   # Check for DT and HBA/Raid Controller
@@ -659,12 +671,12 @@ function make() {
           LD_LIBRARY_PATH="${EXTRACTOR_PATH}" "${EXTRACTOR_PATH}/${EXTRACTOR_BIN}" "${PAT_FILE}" "${UNTAR_PAT_PATH}"
         else
           # Untar PAT file
-          tar xf "${PAT_FILE}" -C "${UNTAR_PAT_PATH}" >"${LOG_FILE}" 2>&1
+          tar -xf "${PAT_FILE}" -C "${UNTAR_PAT_PATH}" >"${LOG_FILE}" 2>&1
         fi
         # Cleanup PAT Download
         rm -f "${PAT_FILE}"
       elif [ -f "${DSM_FILE}" ]; then
-        tar xf "${DSM_FILE}" -C "${UNTAR_PAT_PATH}" >"${LOG_FILE}" 2>&1
+        tar -xf "${DSM_FILE}" -C "${UNTAR_PAT_PATH}" >"${LOG_FILE}" 2>&1
       elif [ ! -f "${UNTAR_PAT_PATH}/zImage" ]; then
         dialog --backtitle "$(backtitle)" --title "DSM Download" --aspect 18 \
           --msgbox "ERROR: No DSM Image found!" 0 0
@@ -712,58 +724,63 @@ function make() {
 ###############################################################################
 # Building Loader Offline
 function offlinemake() {
-  # Check for existing Files
-  mkdir -p "${UPLOAD_PATH}"
-  # Get new Files
-  dialog --backtitle "$(backtitle)" --title "DSM Upload" --aspect 18 \
-  --msgbox "Upload your DSM .pat File to /tmp/upload.\nUse SSH/SFTP to connect to ${IP}.\nUser: root | Password: arc\nPress OK to continue!" 0 0
-  # Grep PAT_FILE
-  PAT_FILE=$(ls ${UPLOAD_PATH}/*.pat)
-  if [ ! -f "${PAT_FILE}" ]; then
-    dialog --backtitle "$(backtitle)" --title "DSM Extraction" --aspect 18 \
-      --msgbox "No DSM Image found!\nExit." 0 0
-    return 1
+  if [[ -f "${ORI_ZIMAGE_FILE}" && -f "${ORI_RDGZ_FILE}" && -f "${MOD_ZIMAGE_FILE}" && -f "${MOD_RDGZ_FILE}" ]]; then
+    dialog --backtitle "$(backtitle)" --title "DSM Data" --aspect 18 \
+      --infobox "DSM Model Data found." 0 0
   else
-    # Remove PAT Data for Offline
-    PAT_URL="#"
-    PAT_HASH="#"
-    writeConfigKey "arc.paturl" "${PAT_URL}" "${USER_CONFIG_FILE}"
-    writeConfigKey "arc.pathash" "${PAT_HASH}" "${USER_CONFIG_FILE}"
-    # Extract Files
-    header=$(od -bcN2 ${PAT_FILE} | head -1 | awk '{print $3}')
-    case ${header} in
-        105)
-        isencrypted="no"
-        ;;
-        213)
-        isencrypted="no"
-        ;;
-        255)
-        isencrypted="yes"
-        ;;
-        *)
-        echo -e "Could not determine if pat file is encrypted or not, maybe corrupted, try again!"
-        ;;
-    esac
-    if [ "${isencrypted}" = "yes" ]; then
-      # Uses the extractor to untar PAT file
-      LD_LIBRARY_PATH="${EXTRACTOR_PATH}" "${EXTRACTOR_PATH}/${EXTRACTOR_BIN}" "${PAT_FILE}" "${UNTAR_PAT_PATH}"
+    # Check for existing Files
+    mkdir -p "${UPLOAD_PATH}"
+    # Get new Files
+    dialog --backtitle "$(backtitle)" --title "DSM Upload" --aspect 18 \
+    --msgbox "Upload your DSM .pat File to /tmp/upload.\nUse SSH/SFTP to connect to ${IP}.\nUser: root | Password: arc\nPress OK to continue!" 0 0
+    # Grep PAT_FILE
+    PAT_FILE=$(ls ${UPLOAD_PATH}/*.pat)
+    if [ ! -f "${PAT_FILE}" ]; then
+      dialog --backtitle "$(backtitle)" --title "DSM Extraction" --aspect 18 \
+        --msgbox "No DSM Image found!\nExit." 0 0
+      return 1
     else
-      # Untar PAT file
-      tar xf "${PAT_FILE}" -C "${UNTAR_PAT_PATH}" >"${LOG_FILE}" 2>&1
+      # Remove PAT Data for Offline
+      PAT_URL="#"
+      PAT_HASH="#"
+      writeConfigKey "arc.paturl" "${PAT_URL}" "${USER_CONFIG_FILE}"
+      writeConfigKey "arc.pathash" "${PAT_HASH}" "${USER_CONFIG_FILE}"
+      # Extract Files
+      header=$(od -bcN2 ${PAT_FILE} | head -1 | awk '{print $3}')
+      case ${header} in
+          105)
+          isencrypted="no"
+          ;;
+          213)
+          isencrypted="no"
+          ;;
+          255)
+          isencrypted="yes"
+          ;;
+          *)
+          echo -e "Could not determine if pat file is encrypted or not, maybe corrupted, try again!"
+          ;;
+      esac
+      if [ "${isencrypted}" = "yes" ]; then
+        # Uses the extractor to untar PAT file
+        LD_LIBRARY_PATH="${EXTRACTOR_PATH}" "${EXTRACTOR_PATH}/${EXTRACTOR_BIN}" "${PAT_FILE}" "${UNTAR_PAT_PATH}"
+      else
+        # Untar PAT file
+        tar -xf "${PAT_FILE}" -C "${UNTAR_PAT_PATH}" >"${LOG_FILE}" 2>&1
+      fi
+      # Cleanup old PAT
+      rm -f "${PAT_FILE}"
+      dialog --backtitle "$(backtitle)" --title "DSM Extraction" --aspect 18 \
+        --msgbox "DSM Extraction successful!" 0 0
+      # Copy DSM Files to Locations if DSM Files not found
+      cp -f "${UNTAR_PAT_PATH}/grub_cksum.syno" "${PART1_PATH}"
+      cp -f "${UNTAR_PAT_PATH}/GRUB_VER" "${PART1_PATH}"
+      cp -f "${UNTAR_PAT_PATH}/grub_cksum.syno" "${PART2_PATH}"
+      cp -f "${UNTAR_PAT_PATH}/GRUB_VER" "${PART2_PATH}"
+      cp -f "${UNTAR_PAT_PATH}/zImage" "${ORI_ZIMAGE_FILE}"
+      cp -f "${UNTAR_PAT_PATH}/rd.gz" "${ORI_RDGZ_FILE}"
+      rm -rf "${UNTAR_PAT_PATH}"
     fi
-    # Cleanup old PAT
-    rm -f "${PAT_FILE}"
-    dialog --backtitle "$(backtitle)" --title "DSM Extraction" --aspect 18 \
-      --msgbox "DSM Extraction successful!" 0 0
-    # Copy DSM Files to Locations if DSM Files not found
-    cp -f "${UNTAR_PAT_PATH}/grub_cksum.syno" "${PART1_PATH}"
-    cp -f "${UNTAR_PAT_PATH}/GRUB_VER" "${PART1_PATH}"
-    cp -f "${UNTAR_PAT_PATH}/grub_cksum.syno" "${PART2_PATH}"
-    cp -f "${UNTAR_PAT_PATH}/GRUB_VER" "${PART2_PATH}"
-    cp -f "${UNTAR_PAT_PATH}/zImage" "${ORI_ZIMAGE_FILE}"
-    cp -f "${UNTAR_PAT_PATH}/rd.gz" "${ORI_RDGZ_FILE}"
-    rm -rf "${UNTAR_PAT_PATH}"
   fi
   (
     livepatch
@@ -795,7 +812,7 @@ function offlinemake() {
 }
 
 ###############################################################################
-# Calls boot.sh to boot into DSM Recovery
+# Calls boot.sh to boot into DSM Reinstall Mode
 function juniorboot() {
   BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
   [ "${BUILDDONE}" = "false" ] && dialog --backtitle "$(backtitle)" --title "Alert" \
@@ -805,7 +822,23 @@ function juniorboot() {
   fi
   grub-editenv ${GRUB_PATH}/grubenv set next_entry="junior"
   dialog --backtitle "$(backtitle)" --title "Arc Boot" \
-    --infobox "Booting DSM Recovery...\nPlease stay patient!" 4 30
+    --infobox "Booting DSM Reinstall Mode...\nPlease stay patient!" 4 30
+  sleep 2
+  exec reboot
+}
+
+###############################################################################
+# Calls boot.sh to boot into DSM Recovery Mode
+function recoveryboot() {
+  BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+  [ "${BUILDDONE}" = "false" ] && dialog --backtitle "$(backtitle)" --title "Alert" \
+    --yesno "Config changed, please build Loader first." 0 0
+  if [ $? -eq 0 ]; then
+    premake
+  fi
+  grub-editenv ${GRUB_PATH}/grubenv set next_entry="recovery"
+  dialog --backtitle "$(backtitle)" --title "Arc Boot" \
+    --infobox "Booting DSM Recovery Mode...\nPlease stay patient!" 4 30
   sleep 2
   exec reboot
 }
@@ -870,7 +903,8 @@ while true; do
       echo "k \"Synoinfo \" "                                                               >>"${TMP_PATH}/menu"
       echo "l \"Edit User Config \" "                                                       >>"${TMP_PATH}/menu"
       echo "w \"Reset Loader \" "                                                           >>"${TMP_PATH}/menu"
-      echo "J \"DSM force Reinstall \" "                                                    >>"${TMP_PATH}/menu"
+      echo "J \"Boot DSM Reinstall Mode\" "                                                 >>"${TMP_PATH}/menu"
+      echo "I \"Boot DSM Recovery Mode\" "                                                  >>"${TMP_PATH}/menu"
     fi
     if [ "${BOOTOPTS}" = "true" ]; then
       echo "6 \"\Z1Hide Boot Options\Zn \" "                                                >>"${TMP_PATH}/menu"
@@ -919,6 +953,7 @@ while true; do
     echo "= \"\Z4========== Dev ===========\Zn \" "                                         >>"${TMP_PATH}/menu"
     echo "v \"Save Modifications to Disk \" "                                               >>"${TMP_PATH}/menu"
     echo "n \"Edit Grub Config \" "                                                         >>"${TMP_PATH}/menu"
+    echo "B \"Get DSM Config Backup \" "                                                    >>"${TMP_PATH}/menu"
     echo "L \"Grep Logs from dbgutils \" "                                                  >>"${TMP_PATH}/menu"
     echo "T \"Force enable SSH in DSM \" "                                                  >>"${TMP_PATH}/menu"
     echo "C \"Clone Loaderdisk \" "                                                         >>"${TMP_PATH}/menu"
@@ -970,6 +1005,7 @@ while true; do
     l) editUserConfig; NEXT="l" ;;
     w) resetLoader; NEXT="w" ;;
     J) juniorboot; NEXT="J" ;;
+    I) recoveryboot; NEXT="I" ;;
     # Boot Section
     6) [ "${BOOTOPTS}" = "true" ] && BOOTOPTS='false' || BOOTOPTS='true'
       ARCOPTS="${BOOTOPTS}"
@@ -1098,6 +1134,7 @@ while true; do
       ;;
     v) saveMenu; NEXT="v" ;;
     n) editGrubCfg; NEXT="n" ;;
+    B) getbackup; NEXT="B" ;;
     L) greplogs; NEXT="L" ;;
     T) forcessh; NEXT="T" ;;
     C) cloneLoader; NEXT="C" ;;
