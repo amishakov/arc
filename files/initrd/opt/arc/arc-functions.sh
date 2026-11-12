@@ -364,7 +364,7 @@ function arcPatch() {
     if [ ! -f "${ORI_ZIMAGE_FILE}" ] || [ ! -f "${ORI_RDGZ_FILE}" ]; then
       SN="$(genArc "true" "${MODEL}" sn 2>/dev/null)"
       ARC_PATCH="false"
-      [ "${#SN}" -eq 13 ] && ARC_PATCH="true" || SN="$(makeArc "${MODEL}" sn 2>/dev/null)"
+      [ "${#SN}" -eq 13 ] && ARC_PATCH="true" || SN="$(genArc "false" "${MODEL}" sn 2>/dev/null)"
     fi
   elif [ "${ARC_MODE}" = "config" ]; then
     SN="$(genArc "true" "${MODEL}" sn 2>/dev/null)"
@@ -390,7 +390,7 @@ function arcPatch() {
         ;;
       2)
         ARC_PATCH="false"
-        SN="$(makeArc "${MODEL}" sn 2>/dev/null)"
+        SN="$(genArc "false" "${MODEL}" sn 2>/dev/null)"
         ;;
       3)
         while true; do
@@ -3616,7 +3616,7 @@ function getnet() {
     if [ "${ARC_PATCH}" = "true" ]; then
       MACS_OUTPUT=$(genArc "true" "${MODEL}" mac "${ETHN}" 2>/dev/null)
     else
-      MACS_OUTPUT=$(makeArc "${MODEL}" mac "${ETHN}" 2>/dev/null)
+      MACS_OUTPUT=$(genArc "false" "${MODEL}" mac "${ETHN}" 2>/dev/null)
     fi
     MACS_OUTPUT=${MACS_OUTPUT//$'\r'/}
     MACS_OUTPUT=$(printf '%s' "$MACS_OUTPUT" | tr -s '[:space:]' $'\n' | sed '/^$/d')
