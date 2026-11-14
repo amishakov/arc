@@ -2335,7 +2335,7 @@ function downgradeMenu() {
       sync
       umount "${TMP_PATH}/mdX"
     done
-    rm -rf "${TMP_PATH}/mdX" >/dev/null
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
   ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Allow Downgrade" \
     --progressbox "Removing Version lock..." 20 70
   dialog --backtitle "$(backtitle)" --title "Allow Downgrade"  \
@@ -2750,7 +2750,7 @@ function forceEnableDSMTelnetSSH() {
       echo "true" >"${TMP_PATH}/isOk"
       umount "${TMP_PATH}/mdX"
     done
-    rm -rf "${TMP_PATH}/mdX"
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
   ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Force DSM SSH" \
     --progressbox "Enabling ..." 20 100
   [ -f "${TMP_PATH}/isOk" ] &&
@@ -2788,7 +2788,7 @@ function removeBlockIPDB {
       echo "true" >"${TMP_PATH}/isOk"
       umount "${TMP_PATH}/mdX"
     done
-    rm -rf "${TMP_PATH}/mdX"
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
   ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Remove Blocked IP Database" \
     --progressbox "Removing ..." 20 100
   [ -f "${TMP_PATH}/isOk" ] &&
@@ -2821,7 +2821,7 @@ function disablescheduledTasks {
       fi
       umount "${TMP_PATH}/mdX"
     done
-    rm -rf "${TMP_PATH}/mdX"
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
   ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Scheduled Tasks" \
     --progressbox "Modifying..." 20 100
   if [ "$(cat ${TMP_PATH}/isOk 2>/dev/null)" = "true" ]; then
@@ -3107,7 +3107,7 @@ function greplogs() {
       umount "${TMP_PATH}/mdX"
       break
     done
-    rm -rf "${TMP_PATH}/mdX" >/dev/null
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
   fi
   if [ "${SYSLOG}" -eq 1 ]; then
     MSG+="System logs found!\n"
@@ -3302,7 +3302,7 @@ function resetDSMNetwork {
       echo "true" >"${TMP_PATH}/isOk"
       umount "${TMP_PATH}/mdX"
     done
-    rm -rf "${TMP_PATH}/mdX"
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
   ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Reset DSM Network" \
     --progressbox "Resetting ..." 20 100
   if [ -f "${TMP_PATH}/isOk" ]; then
@@ -4190,6 +4190,10 @@ function onlineMenu() {
 function recoverDSM() {
   DSMROOTS="$(findDSMRoot)"
   [ -z "${DSMROOTS}" ] && return
+  # Every way out of the loop unmounts md0 first: one left mounted was
+  # mounted over by the next DSM function, and stayed mounted until the
+  # loader shut down.
+  RESTORED="false"
   mkdir -p "${TMP_PATH}/mdX"
   for I in ${DSMROOTS}; do
     T="$(blkid -o value -s TYPE "${I}" 2>/dev/null | sed 's/linux_raid_member/ext4/')"
@@ -4197,17 +4201,17 @@ function recoverDSM() {
     if [ $? -ne 0 ]; then
       dialog --backtitle "$(backtitle)" --title "Mount Error" \
         --msgbox "Failed to mount ${I} to ${TMP_PATH}/mdX. Recovery is not possible." 0 0
+      rmdir "${TMP_PATH}/mdX" 2>/dev/null
       return
     fi
     MODEL=""
     PRODUCTVER=""
     BACKUP_CONFIG="${TMP_PATH}/mdX/usr/arc/backup/p1/user-config.yml"
 
-    # Check if BACKUP_CONFIG exists before proceeding
+    # No backup here: the next DSM system partition may have one.
     if [ ! -f "${BACKUP_CONFIG}" ]; then
-      sleep 3
-      umount -f "${TMP_PATH}/mdX"
-      return
+      umount "${TMP_PATH}/mdX"
+      continue
     fi
 
     MODEL="$(readConfigKey "model" "${BACKUP_CONFIG}")"
@@ -4225,13 +4229,29 @@ function recoverDSM() {
       CONFDONE="$(readConfigKey "arc.confdone" "${BACKUP_CONFIG}")"
       dialog --backtitle "$(backtitle)" --title "Config found" \
         --aspect 18 --msgbox "${TEXT}" 0 0
-      [ $? -ne 0 ] && return
+      if [ $? -ne 0 ]; then
+        umount "${TMP_PATH}/mdX"
+        rmdir "${TMP_PATH}/mdX" 2>/dev/null
+        return
+      fi
       cp -raf "${TMP_PATH}/mdX/usr/arc/backup/p1/"* "${PART1_PATH}" 2>/dev/null
       cp -raf "${TMP_PATH}/mdX/usr/arc/backup/p2/"* "${PART2_PATH}" 2>/dev/null
+      umount "${TMP_PATH}/mdX"
+      RESTORED="true"
       resetBuild
       break
     fi
+    umount "${TMP_PATH}/mdX"
   done
+  rmdir "${TMP_PATH}/mdX" 2>/dev/null
+  # Without a backup restored there is nothing to reload: it said
+  # "Restore successful!" and restarted init whenever the loader had a
+  # config of its own.
+  if [ "${RESTORED}" != "true" ]; then
+    dialog --backtitle "$(backtitle)" --title "Restore Arc" \
+      --msgbox "No Arc backup found on the DSM system partition." 0 0
+    return 1
+  fi
   if [ -f "${USER_CONFIG_FILE}" ]; then
     PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
     if [ -n "${PRODUCTVER}" ]; then
@@ -4254,7 +4274,6 @@ function recoverDSM() {
     dialog --backtitle "$(backtitle)" --title "Restore Arc" \
       --aspect 18 --infobox "Restore successful! -> Reload Arc Init now" 3 50
     sleep 3
-    umount -f "${TMP_PATH}/mdX" 2>/dev/null
     rm -f "${HOME}/.initialized" && exec init.sh
   fi
 }
@@ -4276,22 +4295,27 @@ function cleanDSMRoot() {
     if [ $? -ne 0 ]; then
       dialog --backtitle "$(backtitle)" --title "Clean Cache" \
         --msgbox "Failed to mount ${I}. Cleanup is not possible." 0 0
-      umount -f "${TMP_PATH}/mdX" 2>/dev/null
+      rmdir "${TMP_PATH}/mdX" 2>/dev/null
       return
     fi
     if [ -d "${TMP_PATH}/mdX/etc" ]; then
       for CDIR in "@autoupdate" "upd@te" ".log.junior"; do
-        CPATH="${TMP_PATH}/mdX/${CDIR}/*"
-        if ls "${CPATH}" 2>/dev/null; then
-          rm -rf "${TMP_PATH}/mdX/${CDIR}/"* 2>/dev/null
+        # ls -A on the directory: the quoted "dir/*" this tested never
+        # expanded, so ls always failed and nothing was ever cleaned. find
+        # takes the dot files too, which dir/* left behind.
+        if [ -n "$(ls -A "${TMP_PATH}/mdX/${CDIR}" 2>/dev/null)" ]; then
+          find "${TMP_PATH}/mdX/${CDIR:?}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
           CLEAN=1
         fi
       done
       sync
       sleep 2
-      umount -f "${TMP_PATH}/mdX" 2>/dev/null
     fi
+    # Unmounted whether or not it was DSM's: one with no etc stayed
+    # mounted under the next.
+    umount -f "${TMP_PATH}/mdX" 2>/dev/null
   done
+  rmdir "${TMP_PATH}/mdX" 2>/dev/null
   if [ "${CLEAN}" -eq 0 ]; then
     dialog --backtitle "$(backtitle)" --title "Clean Cache" \
     --infobox "Nothing to clean." 0 0
