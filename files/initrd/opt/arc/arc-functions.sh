@@ -2473,6 +2473,24 @@ function addNewDSMUser() {
   [ $? -ne 0 ] && return 1
   M_USER="$(sed -n '1p' "${TMP_PATH}/resp" 2>/dev/null)"
   M_PASSWD="$(sed -n '2p' "${TMP_PATH}/resp" 2>/dev/null)"
+  # A name synouser would take as an option, or one with a space or a ":"
+  # (the shadow file's separator), is no DSM user name.
+  case "${M_USER}" in
+  "" | -* | *[[:space:]:]*)
+    dialog --backtitle "$(backtitle)" --title "Add DSM User" \
+      --msgbox "Invalid user name" 0 0
+    return 1
+    ;;
+  esac
+  if [ -z "${M_PASSWD}" ]; then
+    dialog --backtitle "$(backtitle)" --title "Add DSM User" \
+      --msgbox "Invalid password" 0 0
+    return 1
+  fi
+  # Quoted for the bash that runs the script in DSM, so a space, a quote
+  # or a $ in either reaches synouser as typed.
+  Q_USER="$(printf '%q' "${M_USER}")"
+  Q_PASSWD="$(printf '%q' "${M_PASSWD}")"
   rm -f "${TMP_PATH}/isOk"
   (
     mkdir -p "${TMP_PATH}/mdX"
@@ -2481,16 +2499,26 @@ function addNewDSMUser() {
       mount -t "${T:-ext4}" "${I}" "${TMP_PATH}/mdX"
       [ $? -ne 0 ] && continue
       mkdir -p "${TMP_PATH}/mdX/usr/arc/once.d"
-      {
-        echo "#!/usr/bin/env bash"
-        echo "if synouser --enum local | grep -q ^${M_USER}\$; then synouser --setpw ${M_USER} ${M_PASSWD}; else synouser --add ${M_USER} ${M_PASSWD} rr 0 user@rr.com 1; fi"
-        echo "synogroup --memberadd administrators ${M_USER}"
-      } >"${TMP_PATH}/mdX/usr/arc/once.d/addNewDSMUser.sh"
+      # It holds the password until DSM has run it, so root's alone.
+      (
+        umask 077
+        {
+          echo "#!/usr/bin/env bash"
+          echo "if synouser --enum local | grep -Fqx -- ${Q_USER}; then"
+          echo "  synouser --setpw ${Q_USER} ${Q_PASSWD}"
+          echo "else"
+          echo "  synouser --add ${Q_USER} ${Q_PASSWD} rr 0 user@rr.com 1"
+          echo "fi"
+          echo "synogroup --memberadd administrators ${Q_USER}"
+        } >"${TMP_PATH}/mdX/usr/arc/once.d/addNewDSMUser.sh"
+      )
+      chmod 700 "${TMP_PATH}/mdX/usr/arc/once.d/addNewDSMUser.sh"
       sync
       echo "true" >"${TMP_PATH}/isOk"
       umount "${TMP_PATH}/mdX"
     done
-    rm -rf "${TMP_PATH}/mdX" >/dev/null
+    # rmdir, not rm -rf: a mount that did not come off is left alone.
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
   ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Add DSM User" \
     --progressbox "Adding ..." 20 100
   [ "$(cat ${TMP_PATH}/isOk 2>/dev/null)" = "true" ] && MSG="Add DSM User successful." || MSG="Add DSM User failed."
