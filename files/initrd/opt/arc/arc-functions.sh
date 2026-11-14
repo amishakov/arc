@@ -2349,8 +2349,8 @@ function downgradeMenu() {
 function resetPassword() {
   DSMROOTS="$(findDSMRoot)"
   if [ -z "${DSMROOTS}" ]; then
-    dialog --backtitle "$(backtitle)" --title "Reset Password" \
-      --msgbox "No DSM system partition(md0) found!\nPlease insert all disks before continuing." 0 0
+    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "No DSM system partition(md0) found!
+Please insert all disks before continuing." 0 0
     return
   fi
   rm -f "${TMP_PATH}/menu" >/dev/null
@@ -2360,76 +2360,90 @@ function resetPassword() {
     mount -t "${T:-ext4}" "${I}" "${TMP_PATH}/mdX"
     [ $? -ne 0 ] && continue
     if [ -f "${TMP_PATH}/mdX/etc/shadow" ]; then
-      while read L; do
-        U=$(echo "${L}" | awk -F ':' '{if ($2 != "*" && $2 != "!!") print $1;}')
+      # Field 8 (expire) is 1 for a user DSM has disabled.
+      while IFS=':' read -r U P _ _ _ _ _ X _; do
         [ -z "${U}" ] && continue
-        E=$(echo "${L}" | awk -F ':' '{if ($8 = "1") print "disabled"; else print "        ";}')
+        [ "${P}" = "*" ] || [ "${P}" = "!!" ] && continue
+        [ "${X}" = "1" ] && E="disabled" || E="        "
         grep -q "status=on" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/preference/${U}/method.config" 2>/dev/null
         [ $? -eq 0 ] && S="SecureSignIn" || S="            "
-        printf "\"%-36s %-10s %-14s\"\n" "${U}" "${E}" "${S}" >>"${TMP_PATH}/menu"
-      done <<<"$(cat "${TMP_PATH}/mdX/etc/shadow" 2>/dev/null)"
-      break
+        printf "\"%-36s %-10s %-14s\"
+" "${U}" "${E}" "${S}" >>"${TMP_PATH}/menu"
+      done <"${TMP_PATH}/mdX/etc/shadow"
     fi
+    # Unmounted before the loop can end: the rm -rf below would otherwise
+    # delete the DSM system partition through the mount point.
     umount "${TMP_PATH}/mdX"
     [ -f "${TMP_PATH}/menu" ] && break
   done
-  rm -rf "${TMP_PATH}/mdX" >/dev/null
+  rmdir "${TMP_PATH}/mdX" 2>/dev/null
   if [ ! -f "${TMP_PATH}/menu" ]; then
-    dialog --backtitle "$(backtitle)" --title "Reset Password" \
-      --msgbox "All existing users have been disabled. Please try adding new user." 0 0
+    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "All existing users have been disabled. Please try adding new user." 0 0
     return 1
   fi
-  dialog --backtitle "$(backtitle)" --title "Reset Password" \
-    --no-items --menu  "Choose a User" 0 0 0 --file "${TMP_PATH}/menu" \
-    2>"${TMP_PATH}/resp"
+  dialog --backtitle "$(backtitle)" --title "Reset Password"     --no-items --menu  "Choose a User" 0 0 0 --file "${TMP_PATH}/menu"     2>"${TMP_PATH}/resp"
   [ $? -ne 0 ] && return 1
   M_USER="$(cat "${TMP_PATH}/resp" 2>/dev/null | awk '{print $1}')"
   [ -z "${M_USER}" ] && return 1
   while true; do
-    dialog --backtitle "$(backtitle)" --title "Reset Password" \
-      --inputbox "Type a new password for user ${M_USER}" 0 70 \
-    2>"${TMP_PATH}/resp"
-    [ $? -ne 0 ] && break 2
+    dialog --backtitle "$(backtitle)" --title "Reset Password"       --inputbox "Type a new password for user ${M_USER}" 0 70     2>"${TMP_PATH}/resp"
+    [ $? -ne 0 ] && return 1
     STRPASSWD="$(cat "${TMP_PATH}/resp")"
     [ -n "${STRPASSWD}" ] && break
-    dialog --backtitle "$(backtitle)" --title "Reset Password" \
-      --msgbox "Invalid password" 0 0
+    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "Invalid password" 0 0
   done
-  #NEWPASSWD="$(python -c "from passlib.hash import sha512_crypt;pw=\"${VALUE}\";print(sha512_crypt.using(rounds=5000).hash(pw))")"
-  NEWPASSWD="$(openssl passwd -6 -salt $(openssl rand -hex 8) "${STRPASSWD}")"
+  # On stdin, not as an argument: a password starting with "-" would be
+  # read as an option, and /proc would show it. openssl salts it itself.
+  NEWPASSWD="$(printf '%s
+' "${STRPASSWD}" | openssl passwd -6 -stdin 2>/dev/null)"
+  case "${NEWPASSWD}" in
+  '$6$'*) ;;
+  *)
+    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "Could not hash the new password." 0 0
+    return 1
+    ;;
+  esac
+  rm -f "${TMP_PATH}/isOk"
   (
     mkdir -p "${TMP_PATH}/mdX"
     for I in ${DSMROOTS}; do
       T="$(blkid -o value -s TYPE "${I}" 2>/dev/null | sed 's/linux_raid_member/ext4/')"
       mount -t "${T:-ext4}" "${I}" "${TMP_PATH}/mdX"
       [ $? -ne 0 ] && continue
-      sed -i "s|^${M_USER}:[^:]*|${M_USER}:${NEWPASSWD}|" "${TMP_PATH}/mdX/etc/shadow"
-      sed -i "/^${M_USER}:/ s/^\(${M_USER}:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*:/\1:/" "${TMP_PATH}/mdX/etc/shadow"
-      sed -i "s|status=on|status=off|g" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/preference/${M_USER}/method.config" 2>/dev/null
-      sed -i "s|list=*$|list=|; s|type=*$|type=none|" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/secure_signin.conf" 2>/dev/null
+      # The user's password, and field 8 (expire) cleared to enable it. awk
+      # compares the name as a string, which sed would read as a regex.
+      # cat > keeps the file's owner and mode.
+      if [ -f "${TMP_PATH}/mdX/etc/shadow" ] &&
+        awk -F ':' -v OFS=':' -v u="${M_USER}" -v p="${NEWPASSWD}"           '$1 == u { $2 = p; $8 = ""; n++ } { print } END { exit n ? 0 : 1 }'           "${TMP_PATH}/mdX/etc/shadow" >"${TMP_PATH}/shadow.new" &&
+        cat "${TMP_PATH}/shadow.new" >"${TMP_PATH}/mdX/etc/shadow"; then
+        sed -i "s|status=on|status=off|g" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/preference/${M_USER}/method.config" 2>/dev/null
+        sed -i "s|^list=.*$|list=|; s|^type=.*$|type=none|" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/secure_signin.conf" 2>/dev/null
 
-      mkdir -p "${TMP_PATH}/mdX/usr/arc/once.d"
-      {
-        echo "#!/usr/bin/env bash"
-        echo "synowebapi -s --exec api=SYNO.Core.OTP.EnforcePolicy method=set version=1 enable_otp_enforcement=false otp_enforce_option='\"none\"'"
-        echo "synowebapi -s --exec api=SYNO.SecureSignIn.AMFA.Policy method=set version=1 type='\"none\"'"
-				echo "synowebapi -s --exec api=SYNO.Core.SmartBlock method=set version=1 enabled=false untrust_try=5 untrust_minute=1 untrust_lock=30 trust_try=10 trust_minute=1 trust_lock=30"
-				echo "synowebapi -s --exec api=SYNO.SecureSignIn.Method.Admin method=reset version=1 account='\"${M_USER}\"' keep_amfa_settings=true"
-      } >"${TMP_PATH}/mdX/usr/arc/once.d/addNewDSMUser.sh"
-      sync
-      echo "true" >"${TMP_PATH}/isOk"
+        mkdir -p "${TMP_PATH}/mdX/usr/arc/once.d"
+        {
+          echo "#!/usr/bin/env bash"
+          echo "synowebapi -s --exec api=SYNO.Core.OTP.EnforcePolicy method=set version=1 enable_otp_enforcement=false otp_enforce_option='\"none\"'"
+          echo "synowebapi -s --exec api=SYNO.SecureSignIn.AMFA.Policy method=set version=1 type='\"none\"'"
+          echo "synowebapi -s --exec api=SYNO.Core.SmartBlock method=set version=1 enabled=false untrust_try=5 untrust_minute=1 untrust_lock=30 trust_try=10 trust_minute=1 trust_lock=30"
+          echo "synowebapi -s --exec api=SYNO.SecureSignIn.Method.Admin method=reset version=1 account='\"${M_USER}\"' keep_amfa_settings=true"
+        } >"${TMP_PATH}/mdX/usr/arc/once.d/resetPassword.sh"
+        sync
+        echo "true" >"${TMP_PATH}/isOk"
+      else
+        echo "${I}: user ${M_USER} not updated"
+      fi
+      rm -f "${TMP_PATH}/shadow.new"
       umount "${TMP_PATH}/mdX"
     done
-    rm -rf "${TMP_PATH}/mdX" >/dev/null
-  ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Reset Password" \
-    --progressbox "Resetting ..." 20 100
+    rmdir "${TMP_PATH}/mdX" 2>/dev/null
+  ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Reset Password"     --progressbox "Resetting ..." 20 100
   if [ -f "${TMP_PATH}/isOk" ]; then
     MSG="Reset password for user ${M_USER} completed."
   else
     MSG="Reset password for user ${M_USER} failed."
   fi
-  dialog --title "Reset Password" \
-    --msgbox "${MSG}" 0 0
+  rm -f "${TMP_PATH}/isOk"
+  dialog --title "Reset Password"     --msgbox "${MSG}" 0 0
   resetBuildstatus
   return
 }
@@ -2450,6 +2464,7 @@ function addNewDSMUser() {
   [ $? -ne 0 ] && return 1
   M_USER="$(sed -n '1p' "${TMP_PATH}/resp" 2>/dev/null)"
   M_PASSWD="$(sed -n '2p' "${TMP_PATH}/resp" 2>/dev/null)"
+  rm -f "${TMP_PATH}/isOk"
   (
     mkdir -p "${TMP_PATH}/mdX"
     for I in ${DSMROOTS}; do
