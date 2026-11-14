@@ -2349,8 +2349,8 @@ function downgradeMenu() {
 function resetPassword() {
   DSMROOTS="$(findDSMRoot)"
   if [ -z "${DSMROOTS}" ]; then
-    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "No DSM system partition(md0) found!
-Please insert all disks before continuing." 0 0
+    dialog --backtitle "$(backtitle)" --title "Reset Password" \
+      --msgbox "No DSM system partition(md0) found!\nPlease insert all disks before continuing." 0 0
     return
   fi
   rm -f "${TMP_PATH}/menu" >/dev/null
@@ -2367,8 +2367,7 @@ Please insert all disks before continuing." 0 0
         [ "${X}" = "1" ] && E="disabled" || E="        "
         grep -q "status=on" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/preference/${U}/method.config" 2>/dev/null
         [ $? -eq 0 ] && S="SecureSignIn" || S="            "
-        printf "\"%-36s %-10s %-14s\"
-" "${U}" "${E}" "${S}" >>"${TMP_PATH}/menu"
+        printf "\"%-36s %-10s %-14s\"\n" "${U}" "${E}" "${S}" >>"${TMP_PATH}/menu"
       done <"${TMP_PATH}/mdX/etc/shadow"
     fi
     # Unmounted before the loop can end: the rm -rf below would otherwise
@@ -2378,28 +2377,34 @@ Please insert all disks before continuing." 0 0
   done
   rmdir "${TMP_PATH}/mdX" 2>/dev/null
   if [ ! -f "${TMP_PATH}/menu" ]; then
-    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "All existing users have been disabled. Please try adding new user." 0 0
+    dialog --backtitle "$(backtitle)" --title "Reset Password" \
+      --msgbox "All existing users have been disabled. Please try adding new user." 0 0
     return 1
   fi
-  dialog --backtitle "$(backtitle)" --title "Reset Password"     --no-items --menu  "Choose a User" 0 0 0 --file "${TMP_PATH}/menu"     2>"${TMP_PATH}/resp"
+  dialog --backtitle "$(backtitle)" --title "Reset Password" \
+    --no-items --menu  "Choose a User" 0 0 0 --file "${TMP_PATH}/menu" \
+    2>"${TMP_PATH}/resp"
   [ $? -ne 0 ] && return 1
   M_USER="$(cat "${TMP_PATH}/resp" 2>/dev/null | awk '{print $1}')"
   [ -z "${M_USER}" ] && return 1
   while true; do
-    dialog --backtitle "$(backtitle)" --title "Reset Password"       --inputbox "Type a new password for user ${M_USER}" 0 70     2>"${TMP_PATH}/resp"
+    dialog --backtitle "$(backtitle)" --title "Reset Password" \
+      --inputbox "Type a new password for user ${M_USER}" 0 70 \
+    2>"${TMP_PATH}/resp"
     [ $? -ne 0 ] && return 1
     STRPASSWD="$(cat "${TMP_PATH}/resp")"
     [ -n "${STRPASSWD}" ] && break
-    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "Invalid password" 0 0
+    dialog --backtitle "$(backtitle)" --title "Reset Password" \
+      --msgbox "Invalid password" 0 0
   done
   # On stdin, not as an argument: a password starting with "-" would be
   # read as an option, and /proc would show it. openssl salts it itself.
-  NEWPASSWD="$(printf '%s
-' "${STRPASSWD}" | openssl passwd -6 -stdin 2>/dev/null)"
+  NEWPASSWD="$(printf '%s\n' "${STRPASSWD}" | openssl passwd -6 -stdin 2>/dev/null)"
   case "${NEWPASSWD}" in
   '$6$'*) ;;
   *)
-    dialog --backtitle "$(backtitle)" --title "Reset Password"       --msgbox "Could not hash the new password." 0 0
+    dialog --backtitle "$(backtitle)" --title "Reset Password" \
+      --msgbox "Could not hash the new password." 0 0
     return 1
     ;;
   esac
@@ -2414,7 +2419,9 @@ Please insert all disks before continuing." 0 0
       # compares the name as a string, which sed would read as a regex.
       # cat > keeps the file's owner and mode.
       if [ -f "${TMP_PATH}/mdX/etc/shadow" ] &&
-        awk -F ':' -v OFS=':' -v u="${M_USER}" -v p="${NEWPASSWD}"           '$1 == u { $2 = p; $8 = ""; n++ } { print } END { exit n ? 0 : 1 }'           "${TMP_PATH}/mdX/etc/shadow" >"${TMP_PATH}/shadow.new" &&
+        awk -F ':' -v OFS=':' -v u="${M_USER}" -v p="${NEWPASSWD}" \
+          '$1 == u { $2 = p; $8 = ""; n++ } { print } END { exit n ? 0 : 1 }' \
+          "${TMP_PATH}/mdX/etc/shadow" >"${TMP_PATH}/shadow.new" &&
         cat "${TMP_PATH}/shadow.new" >"${TMP_PATH}/mdX/etc/shadow"; then
         sed -i "s|status=on|status=off|g" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/preference/${M_USER}/method.config" 2>/dev/null
         sed -i "s|^list=.*$|list=|; s|^type=.*$|type=none|" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/secure_signin.conf" 2>/dev/null
@@ -2436,14 +2443,16 @@ Please insert all disks before continuing." 0 0
       umount "${TMP_PATH}/mdX"
     done
     rmdir "${TMP_PATH}/mdX" 2>/dev/null
-  ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Reset Password"     --progressbox "Resetting ..." 20 100
+  ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Reset Password" \
+    --progressbox "Resetting ..." 20 100
   if [ -f "${TMP_PATH}/isOk" ]; then
     MSG="Reset password for user ${M_USER} completed."
   else
     MSG="Reset password for user ${M_USER} failed."
   fi
   rm -f "${TMP_PATH}/isOk"
-  dialog --title "Reset Password"     --msgbox "${MSG}" 0 0
+  dialog --title "Reset Password" \
+    --msgbox "${MSG}" 0 0
   resetBuildstatus
   return
 }
